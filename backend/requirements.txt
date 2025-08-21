@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.8.2
+python-dotenv==1.0.1
+httpx==0.27.2
+tenacity==8.2.3
+# LangChain core packages
+langchain==0.2.12
+langchain-core==0.2.35
+langchain-community==0.2.11
+# 选择其一或多个模型提供商，先留空占位，用户自行安装
+# openai==1.45.0
+# dashscope==1.20.12  # 通义千问
+# volcengine-python-sdk==1.0.117 # 火山/豆包
