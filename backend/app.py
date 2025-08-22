@@ -2,39 +2,33 @@ import os
 import json
 import asyncio
 import logging
-from typing import List
+from typing import List, Dict, Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 
-# 导入 LangChain 的核心函数
-from backend.OutlineGenerate import stream_outline_with_llm
+# 导入两个核心生成器和它们的数据模型
+from backend.OutlineGenerate import (
+    stream_outline_with_llm, 
+    GenerateParams as OutlineGenerateParams,
+    OutlineChapterList
+)
+from backend.ContentGenerate import (
+    stream_content_with_llm,
+    ContentGenerateParams,
+    OutlineData as ContentOutlineData,
+    Chapter as ContentChapter
+)
 
 # --- 1. 加载环境变量 ---
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
-# --- 2. 定义数据模型 ---
-class GenerateParams(BaseModel):
-    """传递给 LangChain 链的参数模型 (Pydantic V1)"""
-    scene: str = Field(..., description="突发事件场景描述")
-
-class Chapter(BaseModel):
-  """定义单个章节，包含主标题和二级标题列表。"""
-  title: str = Field(description="主章节的标题")
-  sections: List[str] = Field(description="该章节下的二级标题列表")
-
-class OutlineChapterList(BaseModel):
-  """用于接收 LLM 生成的、包含多个章节对象的列表。"""
-  outline: List[Chapter] = Field(
-    description="一个由章节对象组成的数组，每个对象都包含主标题和二级标题列表。"
-  )
-
-
-# --- 3. 初始化 FastAPI 应用 ---
-app = FastAPI(title="Emergency Backend", version="0.2.0")
+# --- 2. FastAPI 应用设置 ---
+app = FastAPI(title="Emergency Backend", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,44 +37,85 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 4. 定义核心业务逻辑 ---
-async def stream_generator(params: GenerateParams):
+# --- 3. 核心业务逻辑 ---
+async def stream_generator(params: OutlineGenerateParams):
     """
-    流式生成器，调用 LangChain 并将结果实时推送给前端。
+    重构后的流式生成器，分两个阶段：
+    1. 流式生成大纲。
+    2. 收集完整大纲后，流式生成详细内容。
     """
+    full_outline_obj = None
+    
     try:
-        # 发送初始状态
+        # --- 阶段 1: 生成大纲 ---
+        logging.info("阶段 1: 开始生成大纲...")
         yield f"event: status_update\ndata: {json.dumps({'message': '正在连接大模型并撰写大纲...'}, ensure_ascii=False)}\n\n"
+        print(f"event: status_update\ndata: {json.dumps({'message': '正在连接大模型并撰写大纲...'}, ensure_ascii=False)}\n\n")
 
-        # 调用核心逻辑流式生成大纲
+        final_outline_chunk = None
         async for chunk in stream_outline_with_llm(params):
             if chunk:
-                yield f"event: outline_chunk\ndata: {json.dumps(chunk.dict(), ensure_ascii=False)}\n\n"
+                final_outline_chunk = chunk
+                # 实时将部分大纲数据块发送给前端
+                yield f"event: outline_chunk\ndata: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
+                print(f"event: outline_chunk\ndata: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n")
         
-        # 发送结束信号
+        if final_outline_chunk:
+            full_outline_obj = final_outline_chunk
+            logging.info("大纲生成成功并解析完毕。")
+            yield f"event: outline_finished\ndata: {json.dumps(full_outline_obj.model_dump(), ensure_ascii=False)}\n\n"
+            print(f"event: outline_finished\ndata: {json.dumps(full_outline_obj.model_dump(), ensure_ascii=False)}\n\n")
+        else:
+            raise Exception("大纲生成未能返回任何数据。")
+
+        # --- 阶段 2: 生成内容 ---
+        logging.info("阶段 2: 开始生成详细内容...")
+        yield f"event: status_update\ndata: {json.dumps({'message': '大纲生成完毕，正在生成详细内容...'}, ensure_ascii=False)}\n\n"
+        print(f"event: status_update\ndata: {json.dumps({'message': '大纲生成完毕，正在生成详细内容...'}, ensure_ascii=False)}\n\n")
+        
+        content_params = ContentGenerateParams(
+            scene=params.scene,
+            outline=ContentOutlineData(
+                outline=[ContentChapter(**chapter.dict()) for chapter in full_outline_obj.outline]
+            )
+        )
+
+        full_content = ""
+        async for content_chunk in stream_content_with_llm(content_params):
+            event = content_chunk.get("event")
+            data = content_chunk.get("data")
+            if event and data is not None:
+                json_data = json.dumps(data, ensure_ascii=False)
+                yield f"event: {event}\ndata: {json_data}\n\n"
+                print(f"event: {event}\ndata: {json_data}\n\n")
+                
+                if event == 'content_chunk':
+                    full_content += data
+                elif event in ['chapter_start', 'section_start']:
+                    full_content += data.get('title_md', '')
+
+        # --- 结束 ---
+        logging.info("全部内容生成完毕。")
         await asyncio.sleep(0.5)
-        yield f"event: end\ndata: {json.dumps({'message': '大纲生成完毕'}, ensure_ascii=False)}\n\n"
+        final_data = {
+            "message": "预案已生成！",
+            "full_content": full_content,
+            "full_outline": full_outline_obj.dict()
+        }
+        yield f"event: full_content_finished\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
 
     except Exception as e:
         logging.error(f"流式生成过程中发生错误: {e}", exc_info=True)
         error_message = f"生成失败: {str(e)}"
         yield f"event: error\ndata: {json.dumps({'error': error_message}, ensure_ascii=False)}\n\n"
 
-# --- 5. 定义 API 接口 ---
+# --- 4. 定义 API 接口 ---
 @app.post("/api/generate")
-async def generate_streaming_endpoint(api_params: GenerateParams = Body(...)):
+async def generate_streaming_endpoint(api_params: OutlineGenerateParams = Body(...)):
     """
     处理流式生成请求的端点。
     """
-    # **核心修复：将 FastAPI 的 Pydantic V2 模型转换为 LangChain 的 V1 模型**
-    langchain_params = GenerateParams(**api_params.dict())
-
     return StreamingResponse(
-        stream_generator(langchain_params),
+        stream_generator(api_params),
         media_type="text/event-stream"
     )
-
-# 用于非流式接口的占位符
-@app.post("/api/outline", response_model=OutlineChapterList)
-async def generate_outline_endpoint(api_params: GenerateParams):
-    raise NotImplementedError("非流式接口待实现")

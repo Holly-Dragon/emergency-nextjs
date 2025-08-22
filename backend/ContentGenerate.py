@@ -74,10 +74,10 @@ output_parser = StrOutputParser()
 content_generation_chain = prompt | llm | output_parser
 
 # --- 5. 核心业务逻辑 ---
-async def stream_content_with_llm(params: ContentGenerateParams) -> AsyncGenerator[str, None]:
+async def stream_content_with_llm(params: ContentGenerateParams) -> AsyncGenerator[Dict[str, Any], None]:
     """
     异步流式生成完整的应急预案内容。
-    遍历大纲，逐个生成章节和小节内容，并以字符串形式流式返回。
+    遍历大纲，逐个生成章节和小节内容，并以结构化的字典形式流式返回。
     """
     last_paragraph = "无"
     outline_str = json.dumps([chapter.dict() for chapter in params.outline.outline], ensure_ascii=False, indent=2)
@@ -85,13 +85,13 @@ async def stream_content_with_llm(params: ContentGenerateParams) -> AsyncGenerat
     for chapter in params.outline.outline:
         # 流式输出主章节标题
         chapter_title_md = f"## {chapter.title}\n\n"
-        yield chapter_title_md
+        yield {"event": "chapter_start", "data": {"title": chapter.title, "title_md": chapter_title_md}}
         last_paragraph = chapter_title_md
 
         for section in chapter.sections:
             # 流式输出子章节标题
             section_title_md = f"### {section}\n\n"
-            yield section_title_md
+            yield {"event": "section_start", "data": {"title": section, "title_md": section_title_md}}
             
             input_data = {
                 "scene": params.scene,
@@ -104,12 +104,14 @@ async def stream_content_with_llm(params: ContentGenerateParams) -> AsyncGenerat
             # 流式调用LLM生成段落内容
             current_paragraph = ""
             async for chunk in content_generation_chain.astream(input_data):
-                yield chunk
+                yield {"event": "content_chunk", "data": chunk}
                 current_paragraph += chunk
             
             # 添加换行符以分隔段落
-            yield "\n\n"
+            yield {"event": "content_chunk", "data": "\n\n"}
             last_paragraph = section_title_md + current_paragraph
+            # 发送小节结束信号
+            yield {"event": "section_end", "data": {"title": section}}
 
 async def generate_content_with_llm(params: ContentGenerateParams) -> str:
     """
