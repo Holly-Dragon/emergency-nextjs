@@ -58,7 +58,7 @@ async def stream_generator(params: OutlineGenerateParams):
                 final_outline_chunk = chunk
                 # 实时将部分大纲数据块发送给前端
                 yield f"event: outline_chunk\ndata: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
-                print(f"event: outline_chunk\ndata: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n")
+                print(f"{json.dumps(chunk.model_dump(), ensure_ascii=False)}")
         
         if final_outline_chunk:
             full_outline_obj = final_outline_chunk
@@ -87,7 +87,7 @@ async def stream_generator(params: OutlineGenerateParams):
             if event and data is not None:
                 json_data = json.dumps(data, ensure_ascii=False)
                 yield f"event: {event}\ndata: {json_data}\n\n"
-                print(f"event: {event}\ndata: {json_data}\n\n")
+                print(f"{json_data}")
                 
                 if event == 'content_chunk':
                     full_content += data

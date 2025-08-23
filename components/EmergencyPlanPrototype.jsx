@@ -88,7 +88,7 @@ export default function EmergencyPlanPrototype() {
         buffer = parts.pop() || '';
 
         for (const part of parts) {
-          if (!part.startsWith('data:')) continue;
+          // if (!part.startsWith('data:')) continue;
 
           const lines = part.split('\n');
           let eventName = 'message';
